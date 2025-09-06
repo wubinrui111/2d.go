@@ -5,20 +5,19 @@ import (
 	"image/color"
 	"log"
 	"math"
-	"math/rand"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 )
-
+//g.playerX = 0
 const (
 	ScreenWidth  = 640
 	ScreenHeight = 480
 	PlayerSize   = 50
-	WorldWidth   = 2000 // 虚拟游戏世界宽度
-	WorldHeight  = 2000 // 虚拟游戏世界高度
-	PlayerSpeed  = 4.0  // 玩家移动速度
-	CameraLerp   = 0.1  // 摄像头跟随速度 (0.01 ~ 0.3，越小越慢越平滑)
+	WorldWidth   = 2000  // 虚拟游戏世界宽度
+	WorldHeight  = 2000  // 虚拟游戏世界高度
+	PlayerSpeed  = 4.0   // 玩家移动速度
+	CameraLerp   = 0.1   // 摄角机跟随速度 (0.01 ~ 0.3，越小越慢越平滑)
 	
 	// 物理常量
 	Gravity       = 0.5
@@ -30,9 +29,7 @@ const (
 	ChunkSize     = 10              // 每个区块的方块数
 	ChunkWorldSize = BlockSize * ChunkSize // 每个区块的世界尺寸
 	GenerationDistance = 3          // 生成距离（以区块为单位）
-	
-	// 地下世界生成参数
-	UndergroundDepth = 5 // 地下层数
+	UndergroundDepth   = 10         // 地下深度
 )
 
 // 地面方块结构
@@ -77,33 +74,11 @@ func (g *Game) generateChunk(chunkX, chunkY int) *Chunk {
 		Y: chunkY,
 	}
 	
-	// 使用确定性随机数生成地形
-	r := rand.New(rand.NewSource(int64(chunkX*1000 + chunkY)))
-	
-	// 生成地下层和地面层
-	for x := 0; x < ChunkSize; x++ {
-		// 计算区块内的X坐标
-		blockX := chunkX*ChunkSize + x
-		
-		// 生成不同深度的方块
-		for y := -UndergroundDepth; y <= 5; y++ { // 从地下UndergroundDepth层到地上5层
-			blockY := chunkY*ChunkSize + y
-			
-			// 有一定概率生成方块（地下层概率更高）
-			probability := 0.3
-			if y < 0 { // 地下层
-				probability = 0.8
-			} else if y == 0 { // 地面层
-				probability = 1.0
-			} else if y < 3 { // 地上几层
-				probability = 0.2
-			}
-			
-			if r.Float64() < probability {
-				worldX := float64(blockX * BlockSize)
-				worldY := float64(blockY * BlockSize)
-				chunk.Blocks = append(chunk.Blocks, Block{worldX, worldY, BlockSize, BlockSize})
-			}
+	// 只在y=0的位置生成无限延伸的水平地面
+	if chunkY == 0 { // 只在y=0的区块生成地面
+		for x := -100; x <= 100; x++ { // 生成足够长的地面
+			blockX := x * BlockSize
+			chunk.Blocks = append(chunk.Blocks, Block{float64(blockX), 0, BlockSize, BlockSize})
 		}
 	}
 	
@@ -143,9 +118,9 @@ func (g *Game) Update() error {
 	// 初始化游戏
 	if g.chunks == nil {
 		g.chunks = make(map[string]*Chunk)
-		// 初始化玩家位置 - 在地面层上方开始
+		// 初始化玩家位置 - 在地面略高的位置开始
 		g.playerX = 0
-		g.playerY = -100 // 在地面上方一些位置开始
+		g.playerY = -PlayerSize // 确保玩家生成在地面以上（地面在y=0，玩家高度为PlayerSize）
 	}
 	
 	// 更新可见区块
@@ -175,10 +150,12 @@ func (g *Game) Update() error {
 	}
 	
 	// 边界检查（支持负数坐标）
-	if g.playerX < g.worldMinX {
-		g.playerX = g.worldMinX
-	} else if g.playerX > g.worldMaxX - PlayerSize {
-		g.playerX = g.worldMaxX - PlayerSize
+	if g.worldMinX != 0 && g.worldMaxX != 0 { // 确保世界边界已初始化
+		if g.playerX < g.worldMinX {
+			g.playerX = g.worldMinX
+		} else if g.playerX > g.worldMaxX - PlayerSize {
+			g.playerX = g.worldMaxX - PlayerSize
+		}
 	}
 
 	// 2. 处理跳跃
@@ -216,36 +193,11 @@ func (g *Game) Update() error {
 		}
 	}
 
-	// 6. 如果玩家掉落到世界底部
-	if g.playerY > WorldHeight-PlayerSize {
-		g.playerY = WorldHeight - PlayerSize
-		g.playerVelocityY = 0
-		g.playerOnGround = true
-	}
-	
-	if g.playerY < 0 {
-		g.playerY = 0
-	}
-
-	// 7. 计算摄像机目标位置（玩家中心位置）
+	// 6. 计算摄像机目标位置（玩家中心位置）
 	targetCameraX := -g.playerX + ScreenWidth/2 - PlayerSize/2
 	targetCameraY := -g.playerY + ScreenHeight/2 - PlayerSize/2
 
-	// 8. 限制摄像头不越界
-	clamp := func(x, min, max float64) float64 {
-		if x < min {
-			return min
-		}
-		if x > max {
-			return max
-		}
-		return x
-	}
-
-	targetCameraX = clamp(targetCameraX, -(WorldWidth-ScreenWidth), 0)
-	targetCameraY = clamp(targetCameraY, -(WorldHeight-ScreenHeight), 0)
-
-	// 9. 平滑移动摄像机到目标位置
+	// 7. 平滑移动摄像机到目标位置
 	g.cameraX += (targetCameraX - g.cameraX) * CameraLerp
 	g.cameraY += (targetCameraY - g.cameraY) * CameraLerp
 
