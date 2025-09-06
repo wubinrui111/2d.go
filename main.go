@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image/color"
 	"log"
+	"math"
+	"math/rand"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -22,11 +24,26 @@ const (
 	Gravity       = 0.5
 	JumpPower     = 12.0
 	PlayerMaxFall = 10.0
+	
+	// 地形生成常量
+	BlockSize     = 50
+	ChunkSize     = 10              // 每个区块的方块数
+	ChunkWorldSize = BlockSize * ChunkSize // 每个区块的世界尺寸
+	GenerationDistance = 3          // 生成距离（以区块为单位）
+	
+	// 地下世界生成参数
+	UndergroundDepth = 5 // 地下层数
 )
 
 // 地面方块结构
 type Block struct {
 	X, Y, W, H float64
+}
+
+// 区块结构
+type Chunk struct {
+	X, Y   int
+	Blocks []Block
 }
 
 type Game struct {
@@ -39,28 +56,107 @@ type Game struct {
 	
 	// 地面方块列表
 	blocks []Block
+	
+	// 区块管理
+	chunks map[string]*Chunk
+	
+	// 世界边界（用于地下世界）
+	worldMinX, worldMaxX float64
+	worldMinY, worldMaxY float64
+}
+
+// 获取区块键值
+func chunkKey(x, y int) string {
+	return fmt.Sprintf("%d,%d", x, y)
+}
+
+// 生成地形区块
+func (g *Game) generateChunk(chunkX, chunkY int) *Chunk {
+	chunk := &Chunk{
+		X: chunkX,
+		Y: chunkY,
+	}
+	
+	// 使用确定性随机数生成地形
+	r := rand.New(rand.NewSource(int64(chunkX*1000 + chunkY)))
+	
+	// 生成地下层和地面层
+	for x := 0; x < ChunkSize; x++ {
+		// 计算区块内的X坐标
+		blockX := chunkX*ChunkSize + x
+		
+		// 生成不同深度的方块
+		for y := -UndergroundDepth; y <= 5; y++ { // 从地下UndergroundDepth层到地上5层
+			blockY := chunkY*ChunkSize + y
+			
+			// 有一定概率生成方块（地下层概率更高）
+			probability := 0.3
+			if y < 0 { // 地下层
+				probability = 0.8
+			} else if y == 0 { // 地面层
+				probability = 1.0
+			} else if y < 3 { // 地上几层
+				probability = 0.2
+			}
+			
+			if r.Float64() < probability {
+				worldX := float64(blockX * BlockSize)
+				worldY := float64(blockY * BlockSize)
+				chunk.Blocks = append(chunk.Blocks, Block{worldX, worldY, BlockSize, BlockSize})
+			}
+		}
+	}
+	
+	return chunk
+}
+
+// 加载区块（如果不存在则生成）
+func (g *Game) loadChunk(chunkX, chunkY int) {
+	key := chunkKey(chunkX, chunkY)
+	if _, exists := g.chunks[key]; !exists {
+		g.chunks[key] = g.generateChunk(chunkX, chunkY)
+		g.blocks = append(g.blocks, g.chunks[key].Blocks...)
+	}
+}
+
+// 更新可见区块
+func (g *Game) updateChunks() {
+	// 计算玩家所在区块
+	playerChunkX := int(math.Floor(g.playerX / ChunkWorldSize))
+	playerChunkY := int(math.Floor(g.playerY / ChunkWorldSize))
+	
+	// 加载玩家周围的区块
+	for x := playerChunkX - GenerationDistance; x <= playerChunkX + GenerationDistance; x++ {
+		for y := playerChunkY - GenerationDistance; y <= playerChunkY + GenerationDistance; y++ {
+			g.loadChunk(x, y)
+		}
+	}
+	
+	// 更新世界边界
+	g.worldMinX = float64((playerChunkX - GenerationDistance*2) * ChunkWorldSize)
+	g.worldMaxX = float64((playerChunkX + GenerationDistance*2) * ChunkWorldSize)
+	g.worldMinY = float64((playerChunkY - GenerationDistance*2) * ChunkWorldSize)
+	g.worldMaxY = float64((playerChunkY + GenerationDistance*2) * ChunkWorldSize)
 }
 
 func (g *Game) Update() error {
-	// 初始化地面方块（网格位置相同的方块）
-	if len(g.blocks) == 0 {
-		// 在底部创建一排方块
-		for x := 0; x < WorldWidth; x += 50 {
-			g.blocks = append(g.blocks, Block{float64(x), WorldHeight - 50, 50, 50})
-		}
-		
-		// 添加一些测试平台
-		g.blocks = append(g.blocks, Block{200, WorldHeight - 200, 100, 50})
-		g.blocks = append(g.blocks, Block{400, WorldHeight - 350, 100, 50})
-		g.blocks = append(g.blocks, Block{600, WorldHeight - 500, 100, 50})
+	// 初始化游戏
+	if g.chunks == nil {
+		g.chunks = make(map[string]*Chunk)
+		// 初始化玩家位置 - 在地面层上方开始
+		g.playerX = 0
+		g.playerY = -100 // 在地面上方一些位置开始
 	}
+	
+	// 更新可见区块
+	g.updateChunks()
 	
 	// 1. 处理玩家输入（水平移动）
 	oldX := g.playerX
-	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) || ebiten.IsKeyPressed(ebiten.KeyA) {
 		g.playerX -= PlayerSpeed
 	}
-	if ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+	if ebiten.IsKeyPressed(ebiten.KeyArrowRight) || ebiten.IsKeyPressed(ebiten.KeyD) {
 		g.playerX += PlayerSpeed
 	}
 	
@@ -78,15 +174,15 @@ func (g *Game) Update() error {
 		}
 	}
 	
-	// 边界检查
-	if g.playerX < 0 {
-		g.playerX = 0
-	} else if g.playerX > WorldWidth-PlayerSize {
-		g.playerX = WorldWidth - PlayerSize
+	// 边界检查（支持负数坐标）
+	if g.playerX < g.worldMinX {
+		g.playerX = g.worldMinX
+	} else if g.playerX > g.worldMaxX - PlayerSize {
+		g.playerX = g.worldMaxX - PlayerSize
 	}
 
 	// 2. 处理跳跃
-	if ebiten.IsKeyPressed(ebiten.KeySpace) && g.playerOnGround {
+	if (ebiten.IsKeyPressed(ebiten.KeySpace) || ebiten.IsKeyPressed(ebiten.KeyW)) && g.playerOnGround {
 		g.playerVelocityY = -JumpPower
 		g.playerOnGround = false
 	}
@@ -173,21 +269,32 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	op.GeoM.Translate(g.cameraX, g.cameraY)
 
 	// 绘制网格（帮助观察移动）
-	for x := 0; x <= WorldWidth; x += 50 {
-		x0, y0 := op.GeoM.Apply(float64(x), 0)
-		x1, y1 := op.GeoM.Apply(float64(x), WorldHeight)
+	gridSize := 50.0
+	for x := math.Floor((g.cameraX - ScreenWidth/2) / gridSize) * gridSize; x <= math.Ceil((g.cameraX + ScreenWidth + ScreenWidth/2) / gridSize) * gridSize; x += gridSize {
+		x0, y0 := op.GeoM.Apply(x, g.cameraY - ScreenHeight)
+		x1, y1 := op.GeoM.Apply(x, g.cameraY + ScreenHeight*2)
 		ebitenutil.DrawLine(screen, x0, y0, x1, y1, color.Gray{100})
 	}
-	for y := 0; y <= WorldHeight; y += 50 {
-		x0, y0 := op.GeoM.Apply(0, float64(y))
-		x1, y1 := op.GeoM.Apply(WorldWidth, float64(y))
+	
+	for y := math.Floor((g.cameraY - ScreenHeight/2) / gridSize) * gridSize; y <= math.Ceil((g.cameraY + ScreenHeight + ScreenHeight/2) / gridSize) * gridSize; y += gridSize {
+		x0, y0 := op.GeoM.Apply(g.cameraX - ScreenWidth, y)
+		x1, y1 := op.GeoM.Apply(g.cameraX + ScreenWidth*2, y)
 		ebitenutil.DrawLine(screen, x0, y0, x1, y1, color.Gray{100})
 	}
 
 	// 绘制地面方块
 	for _, block := range g.blocks {
 		x, y := op.GeoM.Apply(block.X, block.Y)
-		ebitenutil.DrawRect(screen, x, y, block.W, block.H, color.RGBA{100, 200, 100, 255})
+		// 根据方块的Y坐标改变颜色（地下更深的颜色）
+		blockColor := color.RGBA{100, 200, 100, 255}
+		if block.Y < 0 {
+			// 地下使用不同颜色
+			blockColor = color.RGBA{150, 100, 50, 255} // 土色
+		} else if block.Y == 0 {
+			// 地面层使用草色
+			blockColor = color.RGBA{50, 180, 50, 255}
+		}
+		ebitenutil.DrawRect(screen, x, y, block.W, block.H, blockColor)
 	}
 
 	// 绘制玩家（红色方块）
@@ -199,6 +306,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Camera: (%.1f, %.1f)", g.cameraX, g.cameraY), 10, 30)
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Velocity Y: %.2f", g.playerVelocityY), 10, 50)
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("On Ground: %t", g.playerOnGround), 10, 70)
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("World Bound: (%.0f,%.0f)-(%.0f,%.0f)", g.worldMinX, g.worldMinY, g.worldMaxX, g.worldMaxY), 10, 90)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
