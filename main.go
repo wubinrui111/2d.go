@@ -398,6 +398,18 @@ func (g *Game) Update() error {
 		g.updateCurrentItemType()
 	}
 	
+	// 鼠标滚轮切换物品
+	_, wheelY := ebiten.Wheel()
+	if wheelY > 0 {
+		// 向上滚动，选择下一个物品
+		g.hotbarSelected = (g.hotbarSelected + 1) % 3
+		g.updateCurrentItemType()
+	} else if wheelY < 0 {
+		// 向下滚动，选择上一个物品
+		g.hotbarSelected = (g.hotbarSelected + 2) % 3 // +2 等同于 -1 (mod 3)
+		g.updateCurrentItemType()
+	}
+	
 	// 更新可见区块
 	g.updateChunks()
 	
