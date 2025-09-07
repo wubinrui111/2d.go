@@ -37,21 +37,53 @@ const (
 	GameModeSurvival        // 生存模式
 	
 	// 生存模式参数
-	MaxPlaceDistance = 5 * BlockSize // 最大放置距离
+	MaxPlaceDistance = 5 * BlockSize
 )
+
+// 物品类型定义
+type ItemType int
+
+const (
+	ItemTypeGrass ItemType = iota // 草地
+	ItemTypeDirt                  // 泥土
+	ItemTypeStone                 // 石头
+)
+
+// 物品定义结构
+type Item struct {
+	Type        ItemType
+	Name        string
+	Color       color.RGBA
+	Description string
+}
+
+// 全局物品注册表
+var itemRegistry = map[ItemType]Item{
+	ItemTypeGrass: {
+		Type:        ItemTypeGrass,
+		Name:        "Grass",
+		Color:       color.RGBA{50, 180, 50, 255},
+		Description: "Green grass block",
+	},
+	ItemTypeDirt: {
+		Type:        ItemTypeDirt,
+		Name:        "Dirt",
+		Color:       color.RGBA{150, 100, 50, 255},
+		Description: "Brown dirt block",
+	},
+	ItemTypeStone: {
+		Type:        ItemTypeStone,
+		Name:        "Stone",
+		Color:       color.RGBA{100, 100, 100, 255},
+		Description: "Gray stone block",
+	},
+}
 
 // 地面方块结构
 type Block struct {
 	X, Y, W, H float64
-	Type       int // 方块类型
+	Type       ItemType // 方块类型
 }
-
-// 方块类型常量
-const (
-	BlockTypeGrass = iota // 草地
-	BlockTypeDirt         // 泥土
-	BlockTypeStone        // 石头
-)
 
 // 区块结构
 type Chunk struct {
@@ -91,6 +123,12 @@ type Game struct {
 	selectedBlockX     float64 // 选中方块的X坐标
 	selectedBlockY     float64 // 选中方块的Y坐标
 	hasSelectedBlock   bool    // 是否有选中的方块
+	
+	// 当前选中的物品类型
+	currentItemType ItemType
+	
+	// 物品栏相关
+	hotbarSelected int // 当前选中物品栏位置 (0-2)
 }
 
 // 获取鼠标在世界中的位置
@@ -205,8 +243,8 @@ func distance(x1, y1, x2, y2 float64) float64 {
 func (g *Game) addBlock(x, y float64) {
 	// 检查该位置是否已经有方块
 	if !g.isBlockAt(x, y) {
-		// 默认添加草地类型的方块
-		blockType := BlockTypeGrass
+		// 使用当前选中的物品类型
+		blockType := g.currentItemType
 		
 		// 根据游戏模式应用不同的规则
 		switch g.gameMode {
@@ -264,7 +302,7 @@ func (g *Game) generateChunk(chunkX, chunkY int) *Chunk {
 		for x := -100; x <= 100; x++ { // 生成足够长的地面
 			blockX := x * BlockSize
 			// 默认生成草地类型的方块
-			chunk.Blocks = append(chunk.Blocks, Block{float64(blockX), 0, BlockSize, BlockSize, BlockTypeGrass})
+			chunk.Blocks = append(chunk.Blocks, Block{float64(blockX), 0, BlockSize, BlockSize, ItemTypeGrass})
 		}
 	}
 	
@@ -300,6 +338,25 @@ func (g *Game) updateChunks() {
 	g.worldMaxY = float64((playerChunkY + GenerationDistance*2) * ChunkWorldSize)
 }
 
+// 获取物品栏中指定位置的物品类型
+func (g *Game) getItemTypeAtHotbarPosition(pos int) ItemType {
+	switch pos {
+	case 0:
+		return ItemTypeGrass
+	case 1:
+		return ItemTypeDirt
+	case 2:
+		return ItemTypeStone
+	default:
+		return ItemTypeGrass
+	}
+}
+
+// 更新当前选中的物品类型
+func (g *Game) updateCurrentItemType() {
+	g.currentItemType = g.getItemTypeAtHotbarPosition(g.hotbarSelected)
+}
+
 func (g *Game) Update() error {
 	// 初始化游戏
 	if g.chunks == nil {
@@ -308,6 +365,8 @@ func (g *Game) Update() error {
 		g.playerX = 0
 		g.playerY = -PlayerSize // 确保玩家生成在地面以上（地面在y=0，玩家高度为PlayerSize）
 		g.gameMode = GameModeCreative // 默认为创造模式
+		g.hotbarSelected = 0          // 默认选择第一个物品
+		g.updateCurrentItemType()
 	}
 	
 	// 切换游戏模式
@@ -317,6 +376,26 @@ func (g *Game) Update() error {
 		} else {
 			g.gameMode = GameModeCreative
 		}
+	}
+	
+	// 物品栏选择
+	if inpututil.IsKeyJustPressed(ebiten.Key1) {
+		g.hotbarSelected = 0
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key2) {
+		g.hotbarSelected = 1
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key3) {
+		g.hotbarSelected = 2
+		g.updateCurrentItemType()
+	}
+	
+	// 循环切换物品类型
+	if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
+		g.hotbarSelected = (g.hotbarSelected + 1) % 3
+		g.updateCurrentItemType()
 	}
 	
 	// 更新可见区块
@@ -479,6 +558,48 @@ func checkCollision(a, b Block) bool {
 		   a.Y+a.H > b.Y
 }
 
+func (g *Game) drawHotbar(screen *ebiten.Image) {
+	const (
+		hotbarX      = 10
+		hotbarY      = ScreenHeight - 60
+		slotSize     = 40
+		slotSpacing  = 5
+	)
+	
+	// 绘制物品栏背景
+	ebitenutil.DrawRect(screen, float64(hotbarX-2), float64(hotbarY-2), 
+		float64(3*slotSize+2*slotSpacing+4), float64(slotSize+4), 
+		color.RGBA{0, 0, 0, 100})
+	
+	// 绘制每个物品栏槽位
+	for i := 0; i < 3; i++ {
+		x := hotbarX + i*(slotSize + slotSpacing)
+		y := hotbarY
+		
+		// 绘制槽位背景
+		slotColor := color.RGBA{100, 100, 100, 100}
+		if i == g.hotbarSelected {
+			slotColor = color.RGBA{200, 200, 200, 200} // 选中的槽位更亮
+		}
+		ebitenutil.DrawRect(screen, float64(x), float64(y), float64(slotSize), float64(slotSize), slotColor)
+		
+		// 绘制物品图标（简单矩形）
+		itemType := g.getItemTypeAtHotbarPosition(i)
+		item, exists := itemRegistry[itemType]
+		if exists {
+			itemColor := item.Color
+			ebitenutil.DrawRect(screen, float64(x+5), float64(y+5), float64(slotSize-10), float64(slotSize-10), itemColor)
+		}
+		
+		// 绘制数字键提示
+		keyText := fmt.Sprintf("%d", i+1)
+		ebitenutil.DebugPrintAt(screen, keyText, x+slotSize/2-4, y+slotSize+2)
+	}
+	
+	// 绘制Q键提示
+	ebitenutil.DebugPrintAt(screen, "Q: Cycle", hotbarX, hotbarY+slotSize+15)
+}
+
 func (g *Game) Draw(screen *ebiten.Image) {
 	// 绘制背景
 	screen.Fill(color.RGBA{30, 30, 60, 255})
@@ -506,14 +627,10 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		x, y := op.GeoM.Apply(block.X, block.Y)
 		// 根据方块类型改变颜色
 		var blockColor color.RGBA
-		switch block.Type {
-		case BlockTypeGrass:
-			blockColor = color.RGBA{50, 180, 50, 255} // 草绿色
-		case BlockTypeDirt:
-			blockColor = color.RGBA{150, 100, 50, 255} // 土色
-		case BlockTypeStone:
-			blockColor = color.RGBA{100, 100, 100, 255} // 石头灰色
-		default:
+		item, exists := itemRegistry[block.Type]
+		if exists {
+			blockColor = item.Color
+		} else {
 			blockColor = color.RGBA{100, 200, 100, 255} // 默认绿色
 		}
 		ebitenutil.DrawRect(screen, x, y, block.W, block.H, blockColor)
@@ -571,11 +688,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	ebitenutil.DebugPrintAt(screen, modeText, 10, 110)
 	ebitenutil.DebugPrintAt(screen, "Press 'M' to switch mode", 10, 130)
 	
+	// 显示当前物品类型
+	currentItem := itemRegistry[g.currentItemType]
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Item: %s", currentItem.Name), 10, 150)
+	ebitenutil.DebugPrintAt(screen, "Press '1/2/3' or 'Q' to switch items", 10, 170)
+	
+	// 绘制物品栏
+	g.drawHotbar(screen)
+	
 	// 显示框选提示
 	if g.selecting {
-		ebitenutil.DebugPrintAt(screen, "Selecting area...", 10, 150)
+		ebitenutil.DebugPrintAt(screen, "Selecting area...", 10, 190)
 	} else {
-		ebitenutil.DebugPrintAt(screen, "Middle mouse button to select area", 10, 150)
+		ebitenutil.DebugPrintAt(screen, "Middle mouse button to select area", 10, 190)
 	}
 }
 
