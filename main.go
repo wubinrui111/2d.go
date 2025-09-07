@@ -1,16 +1,17 @@
 package main
-
 import (
 	"fmt"
 	"image/color"
 	"log"
 	"math"
+	"math/rand"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
-//g.playerX = 0
+
+// 游戏屏幕和玩家常量定义
 const (
 	ScreenWidth  = 640
 	ScreenHeight = 480
@@ -20,7 +21,7 @@ const (
 	PlayerSpeed  = 4.0   // 玩家移动速度
 	CameraLerp   = 0.1   // 摄角机跟随速度 (0.01 ~ 0.3，越小越慢越平滑)
 	
-	// 物理常量
+	// 物理常量定义玩家重力和跳跃行为
 	Gravity       = 0.5
 	JumpPower     = 12.0
 	PlayerMaxFall = 10.0
@@ -32,7 +33,7 @@ const (
 	GenerationDistance = 3          // 生成距离（以区块为单位）
 	UndergroundDepth   = 10         // 地下深度
 	
-	// 游戏模式
+	// 游戏模式枚举
 	GameModeCreative = iota // 创造模式
 	GameModeSurvival        // 生存模式
 	
@@ -40,16 +41,22 @@ const (
 	MaxPlaceDistance = 5 * BlockSize
 )
 
-// 物品类型定义
+// ItemType 定义游戏中可用的方块类型
 type ItemType int
 
+// 方块类型常量定义
 const (
 	ItemTypeGrass ItemType = iota // 草地
 	ItemTypeDirt                  // 泥土
 	ItemTypeStone                 // 石头
+	ItemTypeSand                  // 沙子
+	ItemTypeWood                  // 木头
+	ItemTypeWater                 // 水
+	ItemTypeLava                  // 岩浆
+	ItemTypeSnow                  // 雪
 )
 
-// 物品定义结构
+// Item 定义游戏中可用的物品结构
 type Item struct {
 	Type        ItemType
 	Name        string
@@ -57,7 +64,7 @@ type Item struct {
 	Description string
 }
 
-// 全局物品注册表
+// 全局物品注册表，包含所有可用方块类型及其属性
 var itemRegistry = map[ItemType]Item{
 	ItemTypeGrass: {
 		Type:        ItemTypeGrass,
@@ -77,20 +84,69 @@ var itemRegistry = map[ItemType]Item{
 		Color:       color.RGBA{100, 100, 100, 255},
 		Description: "Gray stone block",
 	},
+	ItemTypeSand: {
+		Type:        ItemTypeSand,
+		Name:        "Sand",
+		Color:       color.RGBA{255, 220, 100, 255},
+		Description: "Golden sand block",
+	},
+	ItemTypeWood: {
+		Type:        ItemTypeWood,
+		Name:        "Wood",
+		Color:       color.RGBA{150, 100, 50, 255},
+		Description: "Brown wood block",
+	},
+	ItemTypeWater: {
+		Type:        ItemTypeWater,
+		Name:        "Water",
+		Color:       color.RGBA{50, 100, 255, 200},
+		Description: "Blue water block",
+	},
+	ItemTypeLava: {
+		Type:        ItemTypeLava,
+		Name:        "Lava",
+		Color:       color.RGBA{255, 100, 0, 200},
+		Description: "Hot lava block",
+	},
+	ItemTypeSnow: {
+		Type:        ItemTypeSnow,
+		Name:        "Snow",
+		Color:       color.RGBA{230, 230, 255, 255},
+		Description: "White snow block",
+	},
 }
 
-// 地面方块结构
+// TerrainType 定义地形类型枚举
+type TerrainType int
+
+// 地形类型常量定义
+const (
+	TerrainTypePlains TerrainType = iota // 平原
+	TerrainTypeHills                     // 丘陵
+	TerrainTypeMountains                 // 山脉
+	TerrainTypeDesert                    // 沙漠
+	TerrainTypeForest                    // 森林
+	TerrainTypeSnowyPlains               // 雪原
+	TerrainTypeSwamp                     // 沼泽
+	TerrainTypeJungle                    // 丛林
+	TerrainTypeTaiga                     // 针叶林
+	TerrainTypeSavanna                   // 热带草原
+	TerrainTypeCanyon                    // 峡谷
+)
+
+// Block 定义游戏中的方块结构
 type Block struct {
 	X, Y, W, H float64
 	Type       ItemType // 方块类型
 }
 
-// 区块结构
+// Chunk 定义地形区块结构
 type Chunk struct {
 	X, Y   int
 	Blocks []Block
 }
 
+// Game 定义游戏主结构，包含所有游戏状态
 type Game struct {
 	playerX, playerY   float64 // 玩家在世界中的位置
 	playerVelocityY    float64 // 玩家垂直速度
@@ -131,7 +187,7 @@ type Game struct {
 	hotbarSelected int // 当前选中物品栏位置 (0-2)
 }
 
-// 获取鼠标在世界中的位置
+// getMouseWorldPosition 获取鼠标在世界坐标系中的位置
 func (g *Game) getMouseWorldPosition() (float64, float64) {
 	x, y := ebiten.CursorPosition()
 	worldX := float64(x) - g.cameraX
@@ -139,12 +195,12 @@ func (g *Game) getMouseWorldPosition() (float64, float64) {
 	return worldX, worldY
 }
 
-// 获取方块坐标（将世界坐标转换为方块坐标）
+// getBlockCoordinate 将世界坐标转换为方块坐标
 func getBlockCoordinate(worldCoord float64) float64 {
 	return math.Floor(worldCoord/BlockSize) * BlockSize
 }
 
-// 检查指定位置是否有方块（精确匹配方块坐标）
+// isBlockAt 检查指定位置是否有方块
 func (g *Game) isBlockAt(x, y float64) bool {
 	for _, block := range g.blocks {
 		// 精确比较方块的X和Y坐标，确保匹配指定位置
@@ -155,7 +211,7 @@ func (g *Game) isBlockAt(x, y float64) bool {
 	return false
 }
 
-// 检查在指定位置和玩家之间是否有视线（用于创造模式）
+// hasLineOfSight 检查指定位置和玩家之间是否有视线（用于创造模式）
 func (g *Game) hasLineOfSight(blockX, blockY, playerX, playerY float64) bool {
 	// 在创造模式下，总是有视线
 	if g.gameMode == GameModeCreative {
@@ -202,7 +258,7 @@ func (g *Game) hasLineOfSight(blockX, blockY, playerX, playerY float64) bool {
 	return true
 }
 
-// 检查指定位置是否与现有方块相邻（用于生存模式）
+// isBlockAdjacent 检查指定位置是否与现有方块相邻（用于生存模式）
 func (g *Game) isBlockAdjacent(x, y float64) bool {
 	// 在生存模式下，必须与现有方块相邻才能放置
 	// 检查四个方向是否有方块
@@ -232,14 +288,14 @@ func (g *Game) isBlockAdjacent(x, y float64) bool {
 	return false
 }
 
-// 计算两点之间的距离
+// distance 计算两点之间的距离
 func distance(x1, y1, x2, y2 float64) float64 {
 	dx := x2 - x1
 	dy := y2 - y1
 	return math.Sqrt(dx*dx + dy*dy)
 }
 
-// 在指定位置添加方块
+// addBlock 在指定位置添加方块
 func (g *Game) addBlock(x, y float64) {
 	// 检查该位置是否已经有方块
 	if !g.isBlockAt(x, y) {
@@ -271,7 +327,7 @@ func (g *Game) addBlock(x, y float64) {
 	}
 }
 
-// 移除指定位置的方块
+// removeBlock 移除指定位置的方块
 func (g *Game) removeBlock(x, y float64) {
 	for i, block := range g.blocks {
 		if block.X == x && block.Y == y {
@@ -285,31 +341,432 @@ func (g *Game) removeBlock(x, y float64) {
 	}
 }
 
-// 获取区块键值
+// chunkKey 获取区块键值
 func chunkKey(x, y int) string {
 	return fmt.Sprintf("%d,%d", x, y)
 }
 
-// 生成地形区块
+// PerlinNoise 生成Perlin噪声值
+type PerlinNoise struct {
+	perm [512]int
+}
+
+// NewPerlinNoise 创建新的Perlin噪声生成器
+func NewPerlinNoise(seed int64) *PerlinNoise {
+	p := &PerlinNoise{}
+	rand.Seed(seed)
+	for i := range p.perm {
+		p.perm[i] = i
+	}
+	rand.Shuffle(len(p.perm), func(i, j int) {
+		p.perm[i], p.perm[j] = p.perm[j], p.perm[i]
+	})
+	return p
+}
+
+// Noise2D 生成2D Perlin噪声
+func (p *PerlinNoise) Noise2D(x, y float64) float64 {
+	X := int(math.Floor(x)) & 255
+	Y := int(math.Floor(y)) & 255
+	
+	x -= math.Floor(x)
+	y -= math.Floor(y)
+	
+	u := p.fade(x)
+	v := p.fade(y)
+	
+	A := p.perm[X] + Y
+	AA := p.perm[A & 511]
+	AB := p.perm[(A+1) & 511]
+	B := p.perm[(X+1) & 255] + Y
+	BA := p.perm[B & 511]
+	BB := p.perm[(B+1) & 511]
+	
+	return p.lerp(v, 
+		p.lerp(u, p.grad(p.perm[AA & 511], x, y), 
+			p.grad(p.perm[BA & 511], x-1, y)), 
+		p.lerp(u, p.grad(p.perm[AB & 511], x, y-1), 
+			p.grad(p.perm[BB & 511], x-1, y-1)))
+}
+
+// fade 淡化函数
+func (p *PerlinNoise) fade(t float64) float64 {
+	return t * t * t * (t*(t*6-15) + 10)
+}
+
+// lerp 线性插值
+func (p *PerlinNoise) lerp(t, a, b float64) float64 {
+	return a + t*(b-a)
+}
+
+// grad 梯度函数
+func (p *PerlinNoise) grad(hash int, x, y float64) float64 {
+	h := hash & 15
+	u := x
+	v := y
+	if h < 8 {
+		u = y
+		v = x
+	}
+	if h&4 != 0 {
+		u = -u
+	}
+	if h&2 != 0 {
+		v = -v
+	}
+	return u + v
+}
+
+// OctaveNoise 生成多层噪声（分形噪声）
+func (p *PerlinNoise) OctaveNoise(octaves int, persistence, scale, x, y float64) float64 {
+	var total float64
+	var frequency, amplitude float64
+	maxAmplitude := 0.0
+	
+	for i := 0; i < octaves; i++ {
+		frequency = math.Pow(2, float64(i))
+		amplitude = math.Pow(persistence, float64(i))
+		
+		total += p.Noise2D(x*scale*frequency, y*scale*frequency) * amplitude
+		maxAmplitude += amplitude
+	}
+	
+	return total / maxAmplitude
+}
+
+// TerrainGenerator 地形生成器
+type TerrainGenerator struct {
+	noise      *PerlinNoise
+	seed       int64
+}
+
+// NewTerrainGenerator 创建新的地形生成器
+func NewTerrainGenerator(seed int64) *TerrainGenerator {
+	return &TerrainGenerator{
+		noise: NewPerlinNoise(seed),
+		seed:  seed,
+	}
+}
+
+// getHeight 获取指定位置的高度
+func (tg *TerrainGenerator) getHeight(x int) int {
+	// 基础地形高度，调整垂直偏移使地面更接近玩家出生点
+	baseHeight := tg.noise.OctaveNoise(4, 0.5, 0.01, float64(x), 0) * 20
+	
+	// 添加细节变化
+	detail := tg.noise.OctaveNoise(3, 0.6, 0.05, float64(x), 100) * 5
+	
+	// 添加山脉
+	mountains := 0.0
+	if val := tg.noise.OctaveNoise(2, 0.7, 0.005, float64(x), 200); val > 0.6 {
+		mountains = val * 20
+	}
+	
+	// 调整整体高度偏移，使地面更适合玩家出生
+	return int(baseHeight + detail + mountains) - 5
+}
+
+// getTerrainType 获取指定位置的地形类型
+func (tg *TerrainGenerator) getTerrainType(x int) TerrainType {
+	// 使用不同的噪声尺度获取地形类型
+	continental := tg.noise.OctaveNoise(3, 0.5, 0.005, float64(x), 300)
+	
+	switch {
+	case continental < -0.4:
+		return TerrainTypeDesert
+	case continental < -0.2:
+		return TerrainTypeSavanna
+	case continental < 0:
+		return TerrainTypePlains
+	case continental < 0.2:
+		return TerrainTypeForest
+	case continental < 0.4:
+		return TerrainTypeHills
+	case continental < 0.6:
+		return TerrainTypeMountains
+	default:
+		return TerrainTypeSnowyPlains
+	}
+}
+
+// getBlockType 获取指定位置和高度的方块类型
+func (tg *TerrainGenerator) getBlockType(x, y, height int, terrainType TerrainType) ItemType {
+	depth := height - y
+	
+	switch terrainType {
+	case TerrainTypeDesert:
+		if depth < 3 {
+			return ItemTypeSand
+		}
+		return ItemTypeStone
+		
+	case TerrainTypeSavanna:
+		if depth == 0 {
+			return ItemTypeGrass
+		} else if depth < 4 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+		
+	case TerrainTypePlains:
+		if depth == 0 {
+			return ItemTypeGrass
+		} else if depth < 3 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+		
+	case TerrainTypeForest:
+		if depth == 0 {
+			return ItemTypeGrass
+		} else if depth < 3 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+		
+	case TerrainTypeHills:
+		if depth == 0 {
+			return ItemTypeGrass
+		} else if depth < 5 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+		
+	case TerrainTypeMountains:
+		if depth == 0 {
+			if y > 5 {
+				return ItemTypeSnow
+			}
+			return ItemTypeStone
+		} else if depth < 3 {
+			return ItemTypeStone
+		}
+		return ItemTypeStone
+		
+	case TerrainTypeSnowyPlains:
+		if depth == 0 {
+			return ItemTypeSnow
+		} else if depth < 3 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+		
+	default:
+		if depth == 0 {
+			return ItemTypeGrass
+		} else if depth < 3 {
+			return ItemTypeDirt
+		}
+		return ItemTypeStone
+	}
+}
+
+
+// hasCave 判断指定位置是否有洞穴
+func (tg *TerrainGenerator) hasCave(x, y int) bool {
+	// 使用噪声生成洞穴
+	caveNoise := tg.noise.OctaveNoise(4, 0.6, 0.1, float64(x), float64(y)+1000)
+	return caveNoise > 0.7 && y > -5
+}
+
+// hasTree 判断指定位置是否有树
+func (tg *TerrainGenerator) hasTree(x, height int, terrainType TerrainType) bool {
+	treeNoise := tg.noise.OctaveNoise(2, 0.5, 0.05, float64(x), 2000)
+	
+	switch terrainType {
+	case TerrainTypeForest:
+		return treeNoise > 0.6 && height >= 0
+	case TerrainTypeJungle:
+		return treeNoise > 0.5 && height >= 0
+	case TerrainTypeTaiga:
+		return treeNoise > 0.55 && height >= -2
+	default:
+		return false
+	}
+}
+
+// getTreeHeight 获取树的高度
+func (tg *TerrainGenerator) getTreeHeight(x int, terrainType TerrainType) int {
+	treeNoise := tg.noise.OctaveNoise(2, 0.5, 0.1, float64(x), 3000)
+	
+	switch terrainType {
+	case TerrainTypeForest:
+		return 4 + int(treeNoise*4)
+	case TerrainTypeJungle:
+		return 6 + int(treeNoise*6)
+	case TerrainTypeTaiga:
+		return 5 + int(treeNoise*3)
+	default:
+		return 3 + int(treeNoise*3)
+	}
+}
+
+// generateChunk 生成地形区块
 func (g *Game) generateChunk(chunkX, chunkY int) *Chunk {
 	chunk := &Chunk{
 		X: chunkX,
 		Y: chunkY,
 	}
 	
-	// 只在y=0的位置生成无限延伸的水平地面
-	if chunkY == 0 { // 只在y=0的区块生成地面
-		for x := -100; x <= 100; x++ { // 生成足够长的地面
-			blockX := x * BlockSize
-			// 默认生成草地类型的方块
-			chunk.Blocks = append(chunk.Blocks, Block{float64(blockX), 0, BlockSize, BlockSize, ItemTypeGrass})
+	// 初始化地形生成器
+	terrainGen := NewTerrainGenerator(12345)
+	
+	// 确保在玩家出生点附近不会生成阻挡方块
+	playerChunkX := int(math.Floor(g.playerX / ChunkWorldSize))
+	isNearPlayerSpawn := (chunkX >= playerChunkX-1) && (chunkX <= playerChunkX+1) && chunkY == 0
+	
+	// 只在需要的区域内生成地形
+	playerChunkY := int(math.Floor(g.playerY / ChunkWorldSize))
+	if chunkY > playerChunkY+3 || chunkY < playerChunkY-3 {
+		return chunk
+	}
+	
+	// 为每个X坐标生成地形
+	for x := 0; x < ChunkSize; x++ {
+		worldX := chunkX*ChunkSize + x
+		
+		// 获取地形高度和类型
+		height := terrainGen.getHeight(worldX)
+		terrainType := terrainGen.getTerrainType(worldX)
+		
+		// 计算方块X坐标
+		blockX := float64(worldX * BlockSize)
+		
+		// 在玩家出生点附近确保不会生成阻挡方块
+		if isNearPlayerSpawn {
+			playerSpawnY := -40.0
+			spawnRadius := 3.0 * BlockSize
+			if math.Abs(blockX) <= spawnRadius {
+				blockY := float64(height * BlockSize)
+				playerTop := playerSpawnY
+				playerBottom := playerSpawnY + PlayerSize
+				
+				if blockY < playerBottom && (blockY + BlockSize) > playerTop {
+					continue
+				}
+			}
+		}
+		
+		// 生成地形柱
+		maxDepth := 5
+		switch terrainType {
+		case TerrainTypeMountains:
+			maxDepth = 8
+		case TerrainTypeHills:
+			maxDepth = 6
+		case TerrainTypeDesert:
+			maxDepth = 4
+		}
+		
+		for y := height; y >= height-maxDepth; y-- {
+			blockY := float64(y * BlockSize)
+			
+			// 检查是否在洞穴位置
+			if terrainGen.hasCave(worldX, y) {
+				continue
+			}
+			
+			// 获取方块类型
+			blockType := terrainGen.getBlockType(worldX, y, height, terrainType)
+			
+			// 添加方块到区块
+			chunk.Blocks = append(chunk.Blocks, Block{
+				X:    blockX,
+				Y:    blockY,
+				W:    BlockSize,
+				H:    BlockSize,
+				Type: blockType,
+			})
+		}
+		
+		// 生成树木
+		if terrainGen.hasTree(worldX, height, terrainType) && !(isNearPlayerSpawn && math.Abs(blockX) <= 3*BlockSize) {
+			treeHeight := terrainGen.getTreeHeight(worldX, terrainType)
+			
+			// 生成树干
+			for i := 1; i <= treeHeight; i++ {
+				chunk.Blocks = append(chunk.Blocks, Block{
+					X:    blockX,
+					Y:    float64(height+i) * BlockSize,
+					W:    BlockSize,
+					H:    BlockSize,
+					Type: ItemTypeWood,
+				})
+			}
+			
+			// 生成树叶
+			switch terrainType {
+			case TerrainTypeForest, TerrainTypeJungle:
+				// 简单的树冠
+				chunk.Blocks = append(chunk.Blocks, Block{
+					X:    blockX - BlockSize,
+					Y:    float64(height+treeHeight+1) * BlockSize,
+					W:    BlockSize * 3,
+					H:    BlockSize,
+					Type: ItemTypeGrass,
+				})
+				
+				if terrainType == TerrainTypeJungle && treeHeight > 6 {
+					chunk.Blocks = append(chunk.Blocks, Block{
+						X:    blockX - BlockSize,
+						Y:    float64(height+treeHeight-2) * BlockSize,
+						W:    BlockSize * 3,
+						H:    BlockSize,
+						Type: ItemTypeGrass,
+					})
+				}
+				
+			case TerrainTypeTaiga:
+				// 针叶树冠
+				for i := 0; i < 3; i++ {
+					chunk.Blocks = append(chunk.Blocks, Block{
+						X:    blockX - float64(2-i)*BlockSize/2,
+						Y:    float64(height+treeHeight-1+i) * BlockSize,
+						W:    BlockSize * float64(3-i),
+						H:    BlockSize,
+						Type: ItemTypeGrass,
+					})
+				}
+			}
+		}
+		
+		// 在特定地形生成特殊元素
+		switch terrainType {
+		case TerrainTypeDesert:
+			// 生成仙人掌
+			cactusNoise := terrainGen.noise.OctaveNoise(2, 0.5, 0.1, float64(worldX), 4000)
+			if cactusNoise > 0.7 && height >= 0 && !(isNearPlayerSpawn && math.Abs(blockX) <= 3*BlockSize) {
+				cactusHeight := 1 + int(cactusNoise*3)
+				for i := 1; i <= cactusHeight; i++ {
+					chunk.Blocks = append(chunk.Blocks, Block{
+						X:    blockX,
+						Y:    float64(height+i) * BlockSize,
+						W:    BlockSize,
+						H:    BlockSize,
+						Type: ItemTypeSand,
+					})
+				}
+			}
+			
+		case TerrainTypeSwamp:
+			// 生成水池
+			waterNoise := terrainGen.noise.OctaveNoise(2, 0.5, 0.1, float64(worldX), 5000)
+			if waterNoise > 0.6 && height >= -1 {
+				chunk.Blocks = append(chunk.Blocks, Block{
+					X:    blockX,
+					Y:    float64(height) * BlockSize,
+					W:    BlockSize,
+					H:    BlockSize,
+					Type: ItemTypeWater,
+				})
+			}
 		}
 	}
 	
 	return chunk
 }
 
-// 加载区块（如果不存在则生成）
+// loadChunk 加载区块（如果不存在则生成）
 func (g *Game) loadChunk(chunkX, chunkY int) {
 	key := chunkKey(chunkX, chunkY)
 	if _, exists := g.chunks[key]; !exists {
@@ -318,55 +775,93 @@ func (g *Game) loadChunk(chunkX, chunkY int) {
 	}
 }
 
-// 更新可见区块
+// updateChunks 更新可见区块
 func (g *Game) updateChunks() {
 	// 计算玩家所在区块
 	playerChunkX := int(math.Floor(g.playerX / ChunkWorldSize))
 	playerChunkY := int(math.Floor(g.playerY / ChunkWorldSize))
 	
-	// 加载玩家周围的区块
-	for x := playerChunkX - GenerationDistance; x <= playerChunkX + GenerationDistance; x++ {
-		for y := playerChunkY - GenerationDistance; y <= playerChunkY + GenerationDistance; y++ {
+	// 增加加载范围以提高性能和视觉效果
+	visibleDistance := 3
+	for x := playerChunkX - visibleDistance; x <= playerChunkX + visibleDistance; x++ {
+		for y := playerChunkY - visibleDistance; y <= playerChunkY + visibleDistance; y++ {
 			g.loadChunk(x, y)
 		}
 	}
 	
-	// 更新世界边界
-	g.worldMinX = float64((playerChunkX - GenerationDistance*2) * ChunkWorldSize)
-	g.worldMaxX = float64((playerChunkX + GenerationDistance*2) * ChunkWorldSize)
-	g.worldMinY = float64((playerChunkY - GenerationDistance*2) * ChunkWorldSize)
-	g.worldMaxY = float64((playerChunkY + GenerationDistance*2) * ChunkWorldSize)
+	// 更新世界边界（无限世界不需要限制）
+	// g.worldMinX = float64((playerChunkX - visibleDistance*2) * ChunkWorldSize)
+	// g.worldMaxX = float64((playerChunkX + visibleDistance*2) * ChunkWorldSize)
+	// g.worldMinY = float64((playerChunkY - visibleDistance*2) * ChunkWorldSize)
+	// g.worldMaxY = float64((playerChunkY + visibleDistance*2) * ChunkWorldSize)
 }
 
-// 获取物品栏中指定位置的物品类型
+// getItemTypeAtHotbarPosition 获取物品栏中指定位置的物品类型
 func (g *Game) getItemTypeAtHotbarPosition(pos int) ItemType {
-	switch pos {
-	case 0:
-		return ItemTypeGrass
-	case 1:
-		return ItemTypeDirt
-	case 2:
-		return ItemTypeStone
-	default:
-		return ItemTypeGrass
+	// 定义物品栏中的物品类型
+	hotbarItems := []ItemType{
+		ItemTypeGrass,
+		ItemTypeDirt,
+		ItemTypeStone,
+		ItemTypeSand,
+		ItemTypeWood,
+		ItemTypeWater,
+		ItemTypeLava,
+		ItemTypeSnow,
 	}
+	
+	// 确保索引在有效范围内
+	if pos >= 0 && pos < len(hotbarItems) {
+		return hotbarItems[pos]
+	}
+	
+	// 默认返回草地
+	return ItemTypeGrass
 }
 
-// 更新当前选中的物品类型
+// getHotbarSize 获取物品栏大小
+func (g *Game) getHotbarSize() int {
+	return 8 // 8个物品槽位
+}
+
+// updateCurrentItemType 更新当前选中的物品类型
 func (g *Game) updateCurrentItemType() {
 	g.currentItemType = g.getItemTypeAtHotbarPosition(g.hotbarSelected)
 }
 
+// Update 处理游戏逻辑更新
 func (g *Game) Update() error {
 	// 初始化游戏
 	if g.chunks == nil {
 		g.chunks = make(map[string]*Chunk)
+		// 初始化地形生成器
+		terrainGen := NewTerrainGenerator(12345)
+		// 获取出生点附近的地面高度
+		spawnHeight := terrainGen.getHeight(0)
 		// 初始化玩家位置 - 在地面略高的位置开始
 		g.playerX = 0
-		g.playerY = -PlayerSize // 确保玩家生成在地面以上（地面在y=0，玩家高度为PlayerSize）
+		g.playerY = float64(spawnHeight * BlockSize - PlayerSize - 10) // 确保玩家出生时位于地面之上
 		g.gameMode = GameModeCreative // 默认为创造模式
 		g.hotbarSelected = 0          // 默认选择第一个物品
 		g.updateCurrentItemType()
+		
+		// 确保玩家出生点周围没有方块
+		// 清理玩家出生点附近的方块，确保玩家不会被卡住
+		safeArea := 3.0 * BlockSize // 3个方块的半径
+		var newBlocks []Block
+		for _, block := range g.blocks {
+			// 检查方块是否在玩家安全区域内
+			// 使用方块坐标进行比较，而不是世界坐标
+			blockCenterX := block.X + block.W/2
+			blockCenterY := block.Y + block.H/2
+			
+			// 检查方块是否在玩家安全区域内（水平方向）
+			if !(math.Abs(blockCenterX) <= safeArea &&
+				blockCenterY >= g.playerY-BlockSize && blockCenterY <= g.playerY+PlayerSize+BlockSize) {
+				newBlocks = append(newBlocks, block)
+			}
+		}
+		g.blocks = newBlocks
 	}
 	
 	// 切换游戏模式
@@ -378,7 +873,7 @@ func (g *Game) Update() error {
 		}
 	}
 	
-	// 物品栏选择
+	// 物品栏选择 (支持最多8个物品)
 	if inpututil.IsKeyJustPressed(ebiten.Key1) {
 		g.hotbarSelected = 0
 		g.updateCurrentItemType()
@@ -391,10 +886,30 @@ func (g *Game) Update() error {
 		g.hotbarSelected = 2
 		g.updateCurrentItemType()
 	}
+	if inpututil.IsKeyJustPressed(ebiten.Key4) {
+		g.hotbarSelected = 3
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key5) {
+		g.hotbarSelected = 4
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key6) {
+		g.hotbarSelected = 5
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key7) {
+		g.hotbarSelected = 6
+		g.updateCurrentItemType()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.Key8) {
+		g.hotbarSelected = 7
+		g.updateCurrentItemType()
+	}
 	
 	// 循环切换物品类型
 	if inpututil.IsKeyJustPressed(ebiten.KeyQ) {
-		g.hotbarSelected = (g.hotbarSelected + 1) % 3
+		g.hotbarSelected = (g.hotbarSelected + 1) % g.getHotbarSize()
 		g.updateCurrentItemType()
 	}
 	
@@ -402,11 +917,11 @@ func (g *Game) Update() error {
 	_, wheelY := ebiten.Wheel()
 	if wheelY > 0 {
 		// 向上滚动，选择下一个物品
-		g.hotbarSelected = (g.hotbarSelected + 1) % 3
+		g.hotbarSelected = (g.hotbarSelected + 1) % g.getHotbarSize()
 		g.updateCurrentItemType()
 	} else if wheelY < 0 {
 		// 向下滚动，选择上一个物品
-		g.hotbarSelected = (g.hotbarSelected + 2) % 3 // +2 等同于 -1 (mod 3)
+		g.hotbarSelected = (g.hotbarSelected + g.getHotbarSize() - 1) % g.getHotbarSize()
 		g.updateCurrentItemType()
 	}
 	
@@ -562,7 +1077,7 @@ func (g *Game) Update() error {
 	return nil
 }
 
-// 检测两个矩形是否碰撞
+// checkCollision 检测两个矩形是否碰撞
 func checkCollision(a, b Block) bool {
 	return a.X < b.X+b.W && 
 		   a.X+a.W > b.X && 
@@ -570,6 +1085,7 @@ func checkCollision(a, b Block) bool {
 		   a.Y+a.H > b.Y
 }
 
+// drawHotbar 绘制物品栏
 func (g *Game) drawHotbar(screen *ebiten.Image) {
 	const (
 		hotbarX      = 10
@@ -578,13 +1094,17 @@ func (g *Game) drawHotbar(screen *ebiten.Image) {
 		slotSpacing  = 5
 	)
 	
+	// 计算物品栏总宽度
+	hotbarSize := g.getHotbarSize()
+	hotbarWidth := hotbarSize*slotSize + (hotbarSize-1)*slotSpacing
+	
 	// 绘制物品栏背景
 	ebitenutil.DrawRect(screen, float64(hotbarX-2), float64(hotbarY-2), 
-		float64(3*slotSize+2*slotSpacing+4), float64(slotSize+4), 
+		float64(hotbarWidth+4), float64(slotSize+4), 
 		color.RGBA{0, 0, 0, 100})
 	
 	// 绘制每个物品栏槽位
-	for i := 0; i < 3; i++ {
+	for i := 0; i < hotbarSize; i++ {
 		x := hotbarX + i*(slotSize + slotSpacing)
 		y := hotbarY
 		
@@ -610,8 +1130,10 @@ func (g *Game) drawHotbar(screen *ebiten.Image) {
 	
 	// 绘制Q键提示
 	ebitenutil.DebugPrintAt(screen, "Q: Cycle", hotbarX, hotbarY+slotSize+15)
+	ebitenutil.DebugPrintAt(screen, "Wheel: Switch", hotbarX+80, hotbarY+slotSize+15)
 }
 
+// Draw 渲染游戏画面
 func (g *Game) Draw(screen *ebiten.Image) {
 	// 绘制背景
 	screen.Fill(color.RGBA{30, 30, 60, 255})
@@ -716,11 +1238,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 }
 
+// Layout 设置游戏窗口布局
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 	return ScreenWidth, ScreenHeight
 }
 
+
+// main 程序入口点
 func main() {
+	// 我们使用自定义噪声函数生成地形，不需要随机种子
+	
 	ebiten.SetWindowSize(ScreenWidth, ScreenHeight)
 	ebiten.SetWindowTitle("Smooth Camera Follow - Ebitengine")
 	ebiten.SetWindowResizable(false)
